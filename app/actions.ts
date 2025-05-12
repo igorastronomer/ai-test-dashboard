@@ -20,22 +20,30 @@ pool.connect()
   .then(() => console.log('Successfully connected to PostgreSQL database via pg pool (from actions.ts).'))
   .catch(err => console.error('Error connecting to PostgreSQL database (from actions.ts):', err.stack));
 
+// Define available tables as a constant (not exported)
+const DATABASE_TABLES = {
+  CODE_EXAMPLES: 'code_examples',
+  AIRFLOW_CODE_EMBEDDINGS: 'airflow_code_embeddings'
+};
+
+// Export an async function to get the table names
+export async function getDatabaseTables() {
+  return {
+    CODE_EXAMPLES: DATABASE_TABLES.CODE_EXAMPLES,
+    AIRFLOW_CODE_EMBEDDINGS: DATABASE_TABLES.AIRFLOW_CODE_EMBEDDINGS
+  };
+}
+
 // Interface for the full database item (already includes all fields)
 export interface DatabaseItem {
   id: number;
-  name: string;
-  version?: string | null;
-  display_name?: string | null;
-  short_name_id?: string | null;
-  search_id?: string | null;
-  description?: string | null;
-  documentation?: string | null;
-  organization_id?: string | null;
-  repository_owner?: string | null;
-  repository_name?: string | null;
-  github_url?: string | null;
-  raw_code?: string | null;
-  embedding?: number[] | null; // Note: embedding can be large, consider if needed for list view
+  version: string;
+  release_date?: string | null;
+  runtime_versions?: string | null;
+  name?: string | null;
+  file_path?: string | null;
+  content?: string | null;
+  embedding?: number[] | null;
   created_at?: Date | null;
 }
 
@@ -52,33 +60,41 @@ export interface SemanticSearchArgs {
   queryText: string;
   limit?: number;
   version?: string | null;
+  tableName?: string; // New parameter for table selection
 }
 
-// Updated to fetch only summarized data
-export async function fetchInitialDatabaseItems(): Promise<DatabaseListItem[]> {
+// Updated to fetch only summarized data with table selection
+export async function fetchInitialDatabaseItems(tableName: string = DATABASE_TABLES.CODE_EXAMPLES): Promise<DatabaseListItem[]> {
   try {
-    console.log('Server Action (actions.ts): Fetching initial summarized database items...');
-    // Select only id, name, and created_at for the list view 
-    const result = await pool.query<DatabaseListItem>(
-      "SELECT id, name, version, created_at FROM code_examples ORDER BY id ASC"
-    );
-    console.log(`Server Action (actions.ts): Fetched ${result.rows.length} summarized items.`);
+    console.log(`Server Action (actions.ts): Fetching initial summarized database items from ${tableName}...`);
+    // Select only id, name, and created_at for the list view
+    // For airflow_code_embeddings, we'll use content as the name if name is not available
+    let query = '';
+    
+    if (tableName === DATABASE_TABLES.AIRFLOW_CODE_EMBEDDINGS) {
+      query = `SELECT id, COALESCE(name, LEFT(content, 50)) as name, version, created_at FROM "${tableName}" ORDER BY id ASC`;
+    } else {
+      query = `SELECT id, name, version, created_at FROM "${tableName}" ORDER BY id ASC`;
+    }
+    
+    const result = await pool.query<DatabaseListItem>(query);
+    console.log(`Server Action (actions.ts): Fetched ${result.rows.length} summarized items from ${tableName}.`);
     return result.rows.map(row => ({
       ...row,
       created_at: row.created_at ? new Date(row.created_at) : null,
     }));
   } catch (error) {
-    console.error('Server Action Error (actions.ts - fetchInitialDatabaseItems):', error);
+    console.error(`Server Action Error (actions.ts - fetchInitialDatabaseItems from ${tableName}):`, error);
     return [];
   }
 }
 
-// New server action to fetch a single full database item by ID
-export async function fetchFullDatabaseItemById(id: number): Promise<DatabaseItem | null> {
+// Updated server action to fetch a single full database item by ID with table selection
+export async function fetchFullDatabaseItemById(id: number, tableName: string = DATABASE_TABLES.CODE_EXAMPLES): Promise<DatabaseItem | null> {
   try {
-    console.log(`Server Action (actions.ts): Fetching full database item by ID: ${id}...`);
+    console.log(`Server Action (actions.ts): Fetching full database item by ID: ${id} from ${tableName}...`);
     const result = await pool.query<DatabaseItem>(
-      "SELECT * FROM code_examples WHERE id = $1",
+      `SELECT * FROM "${tableName}" WHERE id = $1`,
       [id]
     );
     if (result.rows.length > 0) {
@@ -89,27 +105,27 @@ export async function fetchFullDatabaseItemById(id: number): Promise<DatabaseIte
         created_at: item.created_at ? new Date(item.created_at) : null,
       };
     }
-    console.log(`Server Action (actions.ts): No item found with ID: ${id}.`);
+    console.log(`Server Action (actions.ts): No item found with ID: ${id} in ${tableName}.`);
     return null;
   } catch (error) {
-    console.error(`Server Action Error (actions.ts - fetchFullDatabaseItemById for ID ${id}):`, error);
+    console.error(`Server Action Error (actions.ts - fetchFullDatabaseItemById for ID ${id} from ${tableName}):`, error);
     return null;
   }
 }
 
 export async function performSemanticSearch(args: SemanticSearchArgs): Promise<DatabaseItem[]> {
-  const { embedding, limit = 3, version } = args; // <--- Destructure version
+  const { embedding, limit = 5, version, tableName = DATABASE_TABLES.CODE_EXAMPLES } = args;
   try {
-    console.log(`Server Action (actions.ts): Performing semantic search for version: ${version || 'any'}...`);
+    console.log(`Server Action (actions.ts): Performing semantic search in ${tableName} for version: ${version || 'any'}...`);
     if (!embedding || embedding.length === 0) {
-      console.warn('Server Action (actions.ts - performSemanticSearch): No embedding provided.');
+      console.warn(`Server Action (actions.ts - performSemanticSearch in ${tableName}): No embedding provided.`);
       return [];
     }
 
     const embeddingString = `[${embedding.join(',')}]`;
     
     let queryText = `
-      SELECT * FROM code_examples
+      SELECT * FROM "${tableName}"
     `;
     
     const queryParams: any[] = [];
@@ -136,13 +152,13 @@ export async function performSemanticSearch(args: SemanticSearchArgs): Promise<D
 
     const result = await pool.query<Omit<DatabaseItem, 'embedding'>>(queryText, queryParams); // Omit embedding as we are not selecting it
     
-    console.log(`Server Action (actions.ts): Semantic search found ${result.rows.length} items.`);
+    console.log(`Server Action (actions.ts): Semantic search found ${result.rows.length} items in ${tableName}.`);
     return result.rows.map(item => ({
       ...item,
       created_at: item.created_at ? new Date(item.created_at) : null,
     }));
   } catch (error) {
-    console.error('Server Action Error (actions.ts - performSemanticSearch):', error);
+    console.error(`Server Action Error (actions.ts - performSemanticSearch in ${tableName}):`, error);
     return [];
   }
 }
