@@ -15,7 +15,10 @@ import {
 } from './actions';
 
 // Define a new type for items that will be displayed as suggestions, including a similarity score
-type DisplaySuggestionItem = DatabaseItem & { similarityScore?: number };
+type DisplaySuggestionItem = DatabaseItem & { 
+  similarityScore?: number;
+  // No need to redefine properties that already exist in DatabaseItem
+};
 
 // All database pool, connection logic, DatabaseItem, SemanticSearchArgs,
 // fetchInitialDatabaseItems, and performSemanticSearch functions have been moved to app/actions.ts
@@ -70,7 +73,7 @@ const airflowVersions = [
   // Add a state to track if we're on the client side
   const [isClient, setIsClient] = useState(false);
 
-  const [version, setVersion] = useState('1.0.0');
+  const [version, setVersion] = useState('3.0.0');
 
   useEffect(() => {
     // Set isClient to true once component mounts (client-side only)
@@ -205,19 +208,23 @@ const airflowVersions = [
     loadInitialItems();
   }, [selectedTable]); // Add selectedTable as a dependency
 
+  console.log("process.env.NEXT_PUBLIC_OPENAI_API_KEY", process.env.NEXT_PUBLIC_OPENAI_API_KEY);
+  console.log("process.env.NEXT_PUBLIC_OPENAI_API_ENDPOINT", process.env.NEXT_PUBLIC_OPENAI_API_ENDPOINT);
   const openaiClient = useMemo(() => new AzureOpenAI({
-    apiKey: '2e955dfb77954ede9cbfeb19616ba39b',
-    endpoint: 'https://askastroeastus2.openai.azure.com',
+    apiKey: process.env.NEXT_PUBLIC_OPENAI_API_KEY!,
+    endpoint: process.env.NEXT_PUBLIC_OPENAI_API_ENDPOINT!,
     dangerouslyAllowBrowser: true,
     apiVersion: "2024-02-01",
   }), []);
 
   const generateEmbeddings = useCallback(async (text: string) => {
     try {
+      console.log(`[${new Date().toISOString()}] generateEmbeddings starting`, text);
       const response = await openaiClient.embeddings.create({
         model: "text-embedding-3-small",
         input: text,
       });
+      console.log(`[${new Date().toISOString()}] generateEmbeddings response`, response);
       if (response.data && response.data.length > 0 && response.data[0].embedding) {
         return response.data[0].embedding;
       }
@@ -231,8 +238,8 @@ const airflowVersions = [
 
   // Helper function to calculate Cosine Similarity
   const calculateCosineSimilarity = (vecA: number[], vecB: number[]): number | null => {
-    console.log("vecA", vecA);
-    console.log("vecB", vecB);
+    // console.log("vecA", vecA);
+    // console.log("vecB", vecB);
     if (!vecA || !vecB || vecA.length !== vecB.length || vecA.length === 0) {
       console.warn('Cosine similarity: Invalid input vectors.', { vecA_len: vecA?.length, vecB_len: vecB?.length });
       return null;
@@ -266,10 +273,16 @@ const airflowVersions = [
   ) => {
     try {
       const apiMessages: any[] = [
-        { role: "system", content: "You are a helpful assistant. Use the provided context to answer the user's query. But highlight specific text from the context that are relevant to the query." }, // Truncated for brevity
+        { 
+          role: "system", 
+          content: "You are a helpful assistant specializing in Apache Airflow documentation and code examples. Your task is to provide detailed, accurate answers based on the context provided. When answering:\n\n1. Thoroughly analyze all information in the context and the user's query\n2. Provide comprehensive explanations with specific code examples when relevant\n3. Quote and highlight relevant portions of the context using markdown formatting (e.g., ```python, **bold**, etc.)\n4. If version-specific information is available, clearly indicate which Airflow version the answer applies to\n5. If the context doesn't contain enough information to fully answer the query, acknowledge this limitation\n6. Structure your responses with clear headings and sections when appropriate\n\nYour goal is to be as helpful and informative as possible, leveraging all available context to provide the most accurate and useful response."
+        },
         ...chatHistory.map((msg) => ({ role: msg.sender === 'user' ? 'user' : 'assistant', content: msg.text })),
         { role: "user", content: `Context from knowledge base:\n---\n${contextForQuery}\n---\n\nUser Query: ${currentUserQuery}` },
       ];
+
+      console.log("apiMessages", apiMessages);
+      
       const completion = await openaiClient.chat.completions.create({ model: "gpt-4.1", messages: apiMessages });
       if (completion.choices && completion.choices.length > 0 && completion.choices[0].message && completion.choices[0].message.content) {
         return completion.choices[0].message.content;
@@ -336,6 +349,7 @@ const airflowVersions = [
   const handleSendMessage = async (e: FormEvent) => {
     e.preventDefault();
     if (!userInput.trim()) return;
+    console.log(`[${new Date().toISOString()}] handleSendMessage starting`, userInput);
     const currentInput = userInput;
     const newUserMessage: Message = { id: Date.now().toString(), text: currentInput, sender: 'user' };
     const messagesBeforeThisTurn = messages;
@@ -343,7 +357,9 @@ const airflowVersions = [
     setUserInput('');
     setIsLoadingAiResponse(true);
     try {
+      console.log(`[${new Date().toISOString()}] handleSendMessage generating embeddings`);
       const userInputEmbedding = await generateEmbeddings(currentInput);
+      console.log(`[${new Date().toISOString()}] handleSendMessage embeddings generated`);
       let foundRawItems: DatabaseItem[] = [];
       let suggestionsWithScores: DisplaySuggestionItem[] = [];
       let vectorContextData = `Regarding your query about "${currentInput.substring(0, 30)}${currentInput.length > 30 ? "..." : ""}", `;
@@ -352,7 +368,7 @@ const airflowVersions = [
         try {
           // Update to include selectedTable in the semantic search and respect version filter toggle
           const searchVersion = useVersionFilter ? version : null;
-          console.log(`Performing semantic search with version filter: ${useVersionFilter ? 'ON' : 'OFF'}, version: ${searchVersion || 'any'}`);
+          console.log(`[${new Date().toISOString()}] handleSendMessage performing semantic search with version filter: ${useVersionFilter ? 'ON' : 'OFF'}, version: ${searchVersion || 'any'}`);
           
           foundRawItems = await performSemanticSearch({ 
             embedding: userInputEmbedding, 
@@ -362,7 +378,8 @@ const airflowVersions = [
             tableName: selectedTable 
           });
           
-          console.log("foundRawItems", foundRawItems);
+          console.log(`[${new Date().toISOString()}] handleSendMessage semantic search results`, foundRawItems);
+          
           if (foundRawItems.length > 0) {
             suggestionsWithScores = foundRawItems.map(item => {
               let score: number | undefined = undefined;
@@ -411,9 +428,36 @@ const airflowVersions = [
             })
             // Sort by similarity score descending, if available
             .sort((a, b) => (b.similarityScore ?? -1) - (a.similarityScore ?? -1))
-            // .slice(0, 2); // Take top 2 for suggestions
+            .slice(0, 5); // Take top 5 for context data
 
-            vectorContextData += `I found potentially relevant items (top 2 shown as suggestions):\n${suggestionsWithScores.map(f => `- ${f.name}${f.similarityScore !== undefined ? ` (Similarity: ${(f.similarityScore * 100).toFixed(1)}%)` : ""}`).join('\n')}`;
+            // Build detailed context data with actual content from the items
+            vectorContextData = `Here are the most relevant items from the database for your query:\n\n`;
+            
+            suggestionsWithScores.forEach((item, index) => {
+              const similarityPercentage = item.similarityScore !== undefined 
+                ? `${(item.similarityScore * 100).toFixed(1)}%` 
+                : 'N/A';
+              
+              // Include file name/item name, similarity score, and content
+              vectorContextData += `--- ITEM ${index + 1} ---\n`;
+              vectorContextData += `File: ${item.name || 'Unnamed'}\n`;
+              vectorContextData += `Similarity: ${similarityPercentage}\n`;
+              
+              // Include version info if available
+              if (item.version) {
+                vectorContextData += `Version: ${item.version}\n`;
+              }
+              
+              // Include the actual content
+              if (item.content) {
+                vectorContextData += `Content:\n${item.content}\n\n`;
+              } else {
+                vectorContextData += `No content available for this item.\n\n`;
+              }
+            });
+            
+            // Only show top 3 as UI suggestions
+            const uiSuggestions = suggestionsWithScores.slice(0, 5);
           } else {
             vectorContextData += `I couldn't find specific items in our database.`;
           }
@@ -425,12 +469,14 @@ const airflowVersions = [
         vectorContextData += `Could not process query for database search (embedding generation failed).`;
       }
 
+      console.log(`[${new Date().toISOString()}] handleSendMessage getting chat completion`);
       const aiResponseText = await getChatCompletion(messagesBeforeThisTurn, currentInput, vectorContextData);
+      console.log(`[${new Date().toISOString()}] handleSendMessage ai response text`, aiResponseText);
       const aiResponseMessage: Message = {
         id: Date.now().toString() + '-ai',
         text: aiResponseText || "Sorry, error in AI response.",
         sender: 'ai',
-        suggestions: suggestionsWithScores.length > 0 ? suggestionsWithScores : undefined,
+        suggestions: suggestionsWithScores.length > 0 ? suggestionsWithScores.slice(0, 5) : undefined,
       };
       setMessages((prevMessages) => [...prevMessages, aiResponseMessage]);
     } catch (error) {

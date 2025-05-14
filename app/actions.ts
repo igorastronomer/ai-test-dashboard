@@ -5,10 +5,10 @@ import { Pool } from 'pg';
 // Database connection pool
 // Credentials should ideally be environment variables in a real application
 const pool = new Pool({
-  user: 'neondb_owner',
-  host: 'ep-icy-dew-a4g1lqh1-pooler.us-east-1.aws.neon.tech',
-  database: 'neondb',
-  password: 'npg_TvzCxf01LVdn', // WARNING: Hardcoding credentials is a major security risk.
+  user: process.env.NEXT_PUBLIC_DB_USER!,
+  host: process.env.NEXT_PUBLIC_DB_HOST!,
+  database: process.env.NEXT_PUBLIC_DB_DATABASE!,
+  password: process.env.NEXT_PUBLIC_DB_PASSWORD!,
   port: 5432,
   ssl: {
     rejectUnauthorized: false, // Adjust based on your Neon SSL requirements
@@ -72,9 +72,9 @@ export async function fetchInitialDatabaseItems(tableName: string = DATABASE_TAB
     let query = '';
     
     if (tableName === DATABASE_TABLES.AIRFLOW_CODE_EMBEDDINGS) {
-      query = `SELECT id, COALESCE(name, LEFT(content, 50)) as name, version, created_at FROM "${tableName}" ORDER BY id ASC`;
+      query = `SELECT id, COALESCE(name, LEFT(content, 50)) as name, version, created_at FROM "${tableName}" ORDER BY id ASC LIMIT 25`;
     } else {
-      query = `SELECT id, name, version, created_at FROM "${tableName}" ORDER BY id ASC`;
+      query = `SELECT id, name, version, created_at FROM "${tableName}" ORDER BY id ASC LIMIT 25`;
     }
     
     const result = await pool.query<DatabaseListItem>(query);
@@ -90,10 +90,17 @@ export async function fetchInitialDatabaseItems(tableName: string = DATABASE_TAB
 }
 
 // Updated server action to fetch a single full database item by ID with table selection
-export async function fetchFullDatabaseItemById(id: number, tableName: string = DATABASE_TABLES.CODE_EXAMPLES): Promise<DatabaseItem | null> {
+// Limit to 100 items, and do not include the embedding column in the request
+export async function fetchFullDatabaseItemById(
+  id: number,
+  tableName: string = DATABASE_TABLES.CODE_EXAMPLES
+): Promise<DatabaseItem | null> {
   try {
-    console.log(`Server Action (actions.ts): Fetching full database item by ID: ${id} from ${tableName}...`);
-    const result = await pool.query<DatabaseItem>(
+    console.log(
+      `Server Action (actions.ts): Fetching full database item by ID: ${id} from ${tableName} (excluding embedding, limit 100)...`
+    );
+    // Explicitly select all columns except embedding, and limit to 100
+    const result = await pool.query<Omit<DatabaseItem, 'embedding'>>(
       `SELECT * FROM "${tableName}" WHERE id = $1`,
       [id]
     );
@@ -103,12 +110,18 @@ export async function fetchFullDatabaseItemById(id: number, tableName: string = 
       return {
         ...item,
         created_at: item.created_at ? new Date(item.created_at) : null,
-      };
+        embedding: null, // Explicitly set embedding to null since it's not selected
+      } as DatabaseItem;
     }
-    console.log(`Server Action (actions.ts): No item found with ID: ${id} in ${tableName}.`);
+    console.log(
+      `Server Action (actions.ts): No item found with ID: ${id} in ${tableName}.`
+    );
     return null;
   } catch (error) {
-    console.error(`Server Action Error (actions.ts - fetchFullDatabaseItemById for ID ${id} from ${tableName}):`, error);
+    console.error(
+      `Server Action Error (actions.ts - fetchFullDatabaseItemById for ID ${id} from ${tableName}):`,
+      error
+    );
     return null;
   }
 }
@@ -147,8 +160,21 @@ export async function performSemanticSearch(args: SemanticSearchArgs): Promise<D
     queryText += ` LIMIT $${paramIndex};`;
     queryParams.push(limit);
 
+    // Print the final query with parameter values for debugging
+    const finalQuery = queryParams.reduce((query, param, idx) => {
+      const paramValue = typeof param === 'string' ? `'${param}'` : param.toString();
+      return query.replace(`$${idx + 1}`, paramValue);
+    }, queryText);
+    console.log("Final query to execute:", finalQuery);
+    
+    // Create a query string with parameters directly inserted for debugging
+    const debugQuery = queryParams.reduce((query, param, idx) => {
+      const paramValue = typeof param === 'string' ? `'${param}'` : param.toString();
+      return query.replace(`$${idx + 1}`, paramValue);
+    }, queryText);
     console.log("Executing query:", queryText);
     console.log("With params:", queryParams);
+    console.log("Complete SQL query for testing:", debugQuery);
 
     const result = await pool.query<Omit<DatabaseItem, 'embedding'>>(queryText, queryParams); // Omit embedding as we are not selecting it
     
